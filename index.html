@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<!--Created with Claude and ChatGPT-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js"></script>
+  <link href="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css" rel="stylesheet" />
+  <script src="https://unpkg.com/pmtiles@4.3.0/dist/pmtiles.js"></script>
+  <meta name="viewport" content="width=device-width, initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <style>
+    :root {
+      --stack-breakpoint: 768px;
+      --stacked-height: 50vh;
+    }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+    }
+
+    body {
+      display: flex;
+      flex-direction: row; /* desktop default */
+      min-height: 100vh;
+      width: 100%;
+    }
+
+    .map-container {
+      flex: 1 1 50%;
+      position: relative;
+      height: 100vh; /* desktop: fill viewport height */
+      overflow: hidden;
+    }
+
+    #map-left, #map-right {
+      width: 100%;
+      height: 100%;
+    }
+
+    .map-label {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: rgba(0, 0, 0, 0.7);
+      color: white;
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-family: sans-serif;
+      font-size: 14px;
+      z-index: 10;
+      pointer-events: none;
+    }
+
+    /* Mobile / stacked layout */
+    @media (max-width: 768px) {
+      body {
+        flex-direction: column;
+      }
+
+      .map-container {
+        /* stacked: each map gets half viewport height */
+        height: var(--stacked-height);
+        flex: 0 0 var(--stacked-height);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="map-container">
+    <div id="map-left"></div>
+    <div class="map-label">Mapterhorn</div>
+  </div>
+  <div class="map-container">
+    <div id="map-right"></div>
+    <div class="map-label">Tilzen Joerd</div>
+  </div>
+
+  <script type="text/javascript">
+    // --- pmtiles protocol (unchanged from your original) ---
+    const protocol = new pmtiles.Protocol({
+      metadata: true,
+      errorOnMissingTile: true
+    });
+
+    maplibregl.addProtocol('mapterhorn', async (params, abortController) => {
+      const [z, x, y] = params.url.replace('mapterhorn://', '').split('/').map(Number);
+      const name = z <= 12 ? 'planet' : `6-${x >> (z - 6)}-${y >> (z - 6)}`;
+      const url = `pmtiles://https://download.mapterhorn.com/${name}.pmtiles/${z}/${x}/${y}.webp`;
+      const response = await protocol.tile({ ...params, url }, abortController);
+      if (response['data'] === null) throw new Error(`Tile z=${z} x=${x} y=${y} not found.`);
+      return response;
+    });
+
+    // --- styles (unchanged) ---
+    const mapterhornStyle = {
+      version: 8,
+      sources: {
+        hillshadeSource: {
+          type: 'raster-dem',
+          tiles: ['mapterhorn://{z}/{x}/{y}'],
+          encoding: 'terrarium',
+          tileSize: 512,
+          attribution: '<a href="https://mapterhorn.com/attribution">© Mapterhorn</a>'
+        }
+      },
+      layers: [
+        { id: 'hillshade', type: 'hillshade', source: 'hillshadeSource' }
+      ]
+    };
+
+    const tilzenStyle = {
+      version: 8,
+      sources: {
+        hillshadeSource: {
+          type: 'raster-dem',
+          tiles: ['https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png'],
+          encoding: 'terrarium',
+          tileSize: 256,
+          attribution: '© Tilezen'
+        }
+      },
+      layers: [
+        { id: 'hillshade', type: 'hillshade', source: 'hillshadeSource' }
+      ]
+    };
+
+    const mapterhornCoords = [9.0788, 47.1194];
+    const tilzenJoerdCoords = [9.0594, 47.1319];
+
+    // --- instantiate maps ---
+    const mapLeft = new maplibregl.Map({
+      container: 'map-left',
+      zoom: 10.5,
+      center: mapterhornCoords,
+      style: mapterhornStyle,
+      hash: false,
+      pitch: 0,
+      bearing: 0,
+      dragRotate: false,
+      touchPitch: false
+    });
+
+    const mapRight = new maplibregl.Map({
+      container: 'map-right',
+      zoom: 10.5,
+      center: tilzenJoerdCoords,
+      style: tilzenStyle,
+      pitch: 0,
+      bearing: 0,
+      dragRotate: false,
+      touchPitch: false
+    });
+
+    // --- keep maps in sync (your code) ---
+    let isSync = false;
+
+    mapLeft.on('move', () => {
+      if (isSync) return;
+      isSync = true;
+      mapRight.jumpTo({
+        center: mapLeft.getCenter(),
+        zoom: mapLeft.getZoom(),
+        bearing: mapLeft.getBearing(),
+        pitch: mapLeft.getPitch()
+      });
+      isSync = false;
+    });
+
+    mapRight.on('move', () => {
+      if (isSync) return;
+      isSync = true;
+      mapLeft.jumpTo({
+        center: mapRight.getCenter(),
+        zoom: mapRight.getZoom(),
+        bearing: mapRight.getBearing(),
+        pitch: mapRight.getPitch()
+      });
+      isSync = false;
+    });
+
+    // --- important: call resize when layout changes ---
+    function resizeMaps() {
+      // guard for map existence
+      if (mapLeft && mapLeft.resize) mapLeft.resize();
+      if (mapRight && mapRight.resize) mapRight.resize();
+    }
+
+    // Use matchMedia to detect layout change and call resize immediately.
+    const mq = window.matchMedia('(max-width: 768px)');
+
+    // When the media query changes, some browsers won't repaint the canvas properly
+    // unless we call map.resize(). We also give a tiny timeout to allow layout to finish.
+    function handleMediaChange(e) {
+      // small delay to let browser finish layout changes
+      setTimeout(resizeMaps, 120);
+    }
+
+    // initial resize after maps have loaded (in case they were initialized while hidden or in a different layout)
+    function onMapLoaded() {
+      resizeMaps();
+    }
+    mapLeft.on('load', onMapLoaded);
+    mapRight.on('load', onMapLoaded);
+
+    // Listen to media changes, window resize and orientation change.
+    mq.addListener ? mq.addListener(handleMediaChange) : mq.addEventListener('change', handleMediaChange);
+    window.addEventListener('resize', () => setTimeout(resizeMaps, 100));
+    window.addEventListener('orientationchange', () => setTimeout(resizeMaps, 200));
+
+    // Also run once right now (covers initial mobile load)
+    setTimeout(resizeMaps, 150);
+  </script>
+</body>
+</html>
